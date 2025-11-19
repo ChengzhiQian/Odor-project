@@ -36,6 +36,7 @@ def get_featurizer(method: str):
         raise ValueError(f"Unknown DATA_PROCESS_METHOD: {method}")
     return SMILES_TO_GRAPH[method], INSPECT_FN[method]
 
+# Here, we use a simple GNN just to ensure that it works
 def odor_label_macro_f1(logits: torch.Tensor,
                         labels: torch.Tensor,
                         threshold: float = 0.5,
