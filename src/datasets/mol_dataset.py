@@ -844,41 +844,57 @@ def load_molecule_dataset(
     smiles_col: str,
     label_cols: Optional[List[str]] = None,
     smiles_to_graph_fn: Callable[[str], Optional[Data]] = smiles_to_pyg_graph_deepchem,
+    grover_fp_path: Optional[str] = None,
 ) -> List[Data]:
     """
     Read data from a CSV file and convert SMILES into PyG Data using the specified smiles_to_graph_fn.
 
-    Parameters：
-    - csv_path：e.g., "data/processed/train_dataset.csv"
-    - smiles_col：e.g., "nonStereoSMILES"
-    - label_cols：List of label columns; defaults to all columns except `smiles_col` and `‘descriptors’` if `None`
-    - smiles_to_graph_fn：SMILES→Data function (can be deepchem / chemprop / groverlite)
+    Parameters:
+    - csv_path: e.g., "data/processed/train_dataset.csv"
+    - smiles_col: e.g., "nonStereoSMILES"
+    - label_cols: List of label columns; defaults to all columns except `smiles_col` and 'descriptors' if `None`
+    - smiles_to_graph_fn: SMILES→Data function (can be deepchem / chemprop / groverlite)
+    - grover_fp_path: optional path to a .npz file containing GROVER fingerprints
+                      with key "fps" (or实际 key), shape [N, D], N = number of rows in csv.
 
-    Return：
-    - data_list: List[Data], where each Data contains data.y and data.smiles
+    Return:
+    - data_list: List[Data], where each Data contains data.y, data.smiles,
+      and optionally data.grover_fp if grover_fp_path is provided.
     """
     data_list: List[Data] = []
+
+    # ------- 1. 如果有 GROVER fingerprint，就先读进来 -------
+    if grover_fp_path is not None:
+        fp_npz = np.load(grover_fp_path)
+        # 根据你真实的 npz 里的 key 来，这里你说是 "fps"
+        grover_fp_all = fp_npz["fps"]          # [N, D]
+        grover_fp_all = torch.from_numpy(grover_fp_all).float()
+    else:
+        grover_fp_all = None
 
     with open(csv_path, "r", encoding="utf-8") as f:
         reader = csv.DictReader(f)
         all_cols = reader.fieldnames
 
         if all_cols is None:
-            raise ValueError(f"CSV {csv_path} has no header，pls check the file.")
+            raise ValueError(f"CSV {csv_path} has no header, pls check the file.")
 
         if label_cols is None:
-            # Default: Remove the SMILES column & description text columns (e.g., ‘descriptors’), leaving only tags.
+            # 默认：除了 SMILES 列和描述文本列，其余都当标签
             exclude = {smiles_col, "descriptors"}
             label_cols = [c for c in all_cols if c not in exclude]
+
+        row_idx = 0  # 对应 grover_fp_all 的行索引
 
         for row in reader:
             smiles = row[smiles_col]
             data = smiles_to_graph_fn(smiles)
             if data is None:
-                # RDKit parsing failed, skipping (解析失败)
+                # RDKit 解析失败，fingerprint 这行也要跳过，保持对齐
+                row_idx += 1
                 continue
 
-            # read the label
+            # ------- 2. 读取标签 -------
             labels = []
             for col in label_cols:
                 val = row[col]
@@ -886,10 +902,25 @@ def load_molecule_dataset(
                     labels.append(float("nan"))
                 else:
                     labels.append(float(val))
-            y = torch.tensor(labels, dtype=torch.float).unsqueeze(0)
+            y = torch.tensor(labels, dtype=torch.float).unsqueeze(0)  # [1, L]
 
             data.y = y
             data.smiles = smiles
+
+            # ------- 3. 如果存在 GROVER fingerprint，就挂在 data 上 -------
+            if grover_fp_all is not None:
+                if row_idx >= grover_fp_all.size(0):
+                    raise ValueError(
+                        f"GROVER fp rows ({grover_fp_all.size(0)}) < CSV rows, "
+                        f"check {grover_fp_path} vs {csv_path}"
+                    )
+                fp_vec = grover_fp_all[row_idx]          # [D]
+                # ★ 关键：加一维，变成 [1, D]，这样 PyG DataLoader 会拼成 [B, D]
+                data.grover_fp = fp_vec.unsqueeze(0)     # [1, D]
+
             data_list.append(data)
+            row_idx += 1
 
     return data_list
+
+
