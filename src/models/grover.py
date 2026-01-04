@@ -62,3 +62,47 @@ class GroverOnlyClassifier(nn.Module):
 
         logits = self.net(fp)   # [B, out_dim]
         return logits
+
+class GroverFinetuneClassifier(nn.Module):
+    """
+    训练时在线跑 GROVER backbone（可插 adapter），再接分类头。
+    期望 self.grover_backbone(batch) -> fp: [B, fp_dim]
+    """
+
+    def __init__(
+        self,
+        grover_backbone: nn.Module,
+        fp_dim: int,
+        out_dim: int,
+        hidden_dim: int = 512,
+        dropout: float = 0.2,
+        freeze_backbone: bool = True,
+        train_layernorm: bool = False,
+    ):
+        super().__init__()
+        self.grover_backbone = grover_backbone
+        self.fp_dim = fp_dim
+
+        self.head = nn.Sequential(
+            nn.Linear(fp_dim, hidden_dim),
+            nn.ReLU(),
+            nn.Dropout(dropout),
+            nn.Linear(hidden_dim, out_dim),
+        )
+
+        if freeze_backbone:
+            for p in self.grover_backbone.parameters():
+                p.requires_grad = False
+
+        if train_layernorm:
+            for n, p in self.grover_backbone.named_parameters():
+                if "norm" in n.lower() or "layernorm" in n.lower():
+                    p.requires_grad = True
+
+    def forward(self, batch: Batch) -> torch.Tensor:
+        fp = self.grover_backbone(batch)  # 必须返回 [B, fp_dim]
+        if fp.dim() == 1:
+            fp = fp.unsqueeze(0)
+        if fp.size(-1) != self.fp_dim:
+            raise RuntimeError(f"[GroverFinetuneClassifier] backbone fp_dim mismatch: got {tuple(fp.shape)}")
+        return self.head(fp)
