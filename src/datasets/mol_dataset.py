@@ -867,7 +867,13 @@ def load_molecule_dataset(
     if grover_fp_path is not None:
         fp_npz = np.load(grover_fp_path)
         # 根据你真实的 npz 里的 key 来，这里你说是 "fps"
-        grover_fp_all = fp_npz["fps"]          # [N, D]
+        # 兼容不同版本的 key：优先 grover_fp，其次 fps
+        if "grover_fp" in fp_npz:
+            grover_fp_all = fp_npz["grover_fp"]
+        elif "fps" in fp_npz:
+            grover_fp_all = fp_npz["fps"]
+        else:
+            raise KeyError(f"NPZ keys = {list(fp_npz.keys())}, expected 'grover_fp' or 'fps'")
         grover_fp_all = torch.from_numpy(grover_fp_all).float()
     else:
         grover_fp_all = None

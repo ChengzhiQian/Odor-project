@@ -178,7 +178,7 @@ def odor_ranking_metrics_from_logits(
             auc_invalid += 1
             continue
 
-        yt = (col_true[mask] > 0.5).astype(int)   # ✅ 强制二值
+        yt = (col_true[mask] > 0.5).astype(int)
         ys = col_score[mask]
 
         # ---- AP: 即使全 0 也会返回 0（一般不报错），这里仍做 try 兜底
@@ -239,11 +239,26 @@ def main():
 
     LABEL_COLS = None
 
-    # 是否需要加载 GROVER fingerprint
-    use_grover_fp = BACKBONE in {"grover", "fusion"}
-    train_fp_path = str(DATA_PROCESSED_DIR / "train_grover_fp.npz") if use_grover_fp else None
-    valid_fp_path = str(DATA_PROCESSED_DIR / "valid_grover_fp.npz") if use_grover_fp else None
-    test_fp_path = str(DATA_PROCESSED_DIR / "test_grover_fp.npz") if use_grover_fp else None
+    # 只改这一个就能切换： "base" 用原版fp，"finetuned" 用adapter训练后的fp
+    GROVER_FP_VARIANT = "base"  # or "base"
+
+    # 你保存 fp 的统一命名（按你现在生成的文件名）
+    GROVER_FP_NAME = {
+        "base": "{split}_grover_fp_base.npz",
+        "large": "{split}_grover_fp_large.npz",
+        "finetuned": "{split}_grover_fp_finetuned.npz",
+        "finetuned_InfoNCE": "{split}_grover_fp_finetuned_InfoNCE.npz"
+    }
+
+    def get_grover_fp_path(split: str):
+        if BACKBONE not in {"grover", "fusion"}:
+            return None
+        fname = GROVER_FP_NAME[GROVER_FP_VARIANT].format(split=split)
+        return str(DATA_PROCESSED_DIR / fname)
+
+    train_fp_path = get_grover_fp_path("train")
+    valid_fp_path = get_grover_fp_path("valid")
+    test_fp_path = get_grover_fp_path("test")
 
     # ------- 加载数据 -------
     train_data = load_molecule_dataset(
@@ -287,10 +302,23 @@ def main():
     elif BACKBONE == "grover":
         fp_dim = train_data[0].grover_fp.size(-1)
         model = GroverOnlyClassifier(fp_dim=fp_dim, out_dim=out_dim).to(device)
-    elif BACKBONE == "fusion":
-        fp_dim = train_data[0].grover_fp.size(-1)
-        model = FusionGNN(in_dim=in_dim, fp_dim=fp_dim,
-                          hidden_dim=128, out_dim=out_dim).to(device)
+
+        with torch.no_grad():
+            Y = torch.stack(
+                [(d.y.squeeze(0) if d.y.dim() == 2 else d.y) for d in train_data],
+                dim=0
+            ).float()  # [N, out_dim]
+
+            # 如果你的标签是 {-1, 1}，转成 {0, 1}
+            if Y.min() < 0:
+                Y = (Y > 0).float()
+
+            p = Y.mean(dim=0)  # 每个标签的正例比例 [out_dim]
+            eps = 1e-4
+            p = p.clamp(eps, 1 - eps)
+            bias = torch.log(p / (1 - p)).to(device)  # logit(p)
+
+            model.net[-1].bias.copy_(bias)
     else:
         raise ValueError(f"Unknown BACKBONE: {BACKBONE}")
 
@@ -310,7 +338,7 @@ def main():
         total_sample_f1 = 0.0
         num_batches = 0
 
-        train_logits_list = []  # ✅ 每个 epoch 重新初始化成 list
+        train_logits_list = []
         train_labels_list = []
 
         for batch in train_loader:
@@ -328,7 +356,6 @@ def main():
             total_sample_f1 += odor_sample_macro_f1(pred, batch.y)
             num_batches += 1
 
-            # ✅ 收集整轮数据（放 CPU，省显存）
             train_logits_list.append(pred.detach().cpu())
             train_labels_list.append(batch.y.detach().cpu())
 
@@ -336,7 +363,6 @@ def main():
         train_label_f1 = total_label_f1 / max(num_batches, 1)
         train_sample_f1 = total_sample_f1 / max(num_batches, 1)
 
-        # ✅ epoch 结束后再 cat（cat 的结果用新名字，别覆盖 list）
         train_logits_all = torch.cat(train_logits_list, dim=0)
         train_labels_all = torch.cat(train_labels_list, dim=0)
         train_rank = odor_ranking_metrics_from_logits(train_logits_all, train_labels_all)

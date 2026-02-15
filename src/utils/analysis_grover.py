@@ -22,7 +22,7 @@ except ImportError:
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DATA_DIR = PROJECT_ROOT / "data" / "processed"
 
-FP_PATH = DATA_DIR / "train_grover_fp.npz"
+FP_PATH = DATA_DIR / "train_grover_fp_base.npz"
 CSV_PATH = DATA_DIR / "train_dataset.csv"
 
 SMILES_COL = "nonStereoSMILES"
@@ -55,7 +55,6 @@ if LABEL_COL not in df.columns:
 if len(df) != fps.shape[0]:
     raise ValueError(
         f"CSV 行数 ({len(df)}) 与 fingerprint 行数 ({fps.shape[0]}) 不一致，"
-        "请检查 train_grover_fp.npz 与 train_dataset.csv 是否对应。"
     )
 
 # 取出标签（0/1），并处理缺失
